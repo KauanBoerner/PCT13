@@ -1,0 +1,386 @@
+#include <SPI.h>
+#include <SD.h>
+#include "max6675.h" 
+
+//Variaveis para cartao SD
+const int CS = 14;
+char dataString[7];
+File meuArquivo;
+
+int T1SO = 2;     //PINO DIGITAL (SO)
+int T1CS = 3;     //PINO DIGITAL (CS)
+int T1CLK = 4;    //PINO DIGITAL (CLK / SCK)
+int T2SO = 5;     //PINO DIGITAL (SO)
+int T2CS = 6;     //PINO DIGITAL (CS)
+int T2CLK = 7;    //PINO DIGITAL (CLK / SCK)
+int T3SO = 8;     //PINO DIGITAL (SO)
+int T3CS = 9;     //PINO DIGITAL (CS)
+int T3CLK = 10;   //PINO DIGITAL (CLK / SCK)
+int T4SO = 11;    //PINO DIGITAL (SO)
+int T4CS = 12;    //PINO DIGITAL (CS)
+int T4CLK = 13;   //PINO DIGITAL (CLK / SCK)
+
+//CRIA UMA INSTÂNCIA UTILIZANDO OS PINOS (CLK, CS, SO)
+MAX6675 T2(T1CLK, T1CS, T1SO); 
+MAX6675 T1(T2CLK, T2CS, T2SO); 
+MAX6675 T3(T3CLK, T3CS, T3SO); 
+MAX6675 T4(T4CLK, T4CS, T4SO); 
+
+// Pinágem Dimmers 
+#define PINO_ZC 18
+#define PINO_DIM1 17
+#define PINO_DIM2 16
+
+volatile long bomba = 71;   // Valor percentual de alimentação ( 0 a 100 % ) 
+volatile long resist = 0;   // Valor percentual de alimentação ( 0 a 100 % )
+volatile long t1;           // tempo do triac para a bomba
+volatile long t2;           // tempo do triac para a restência
+volatile long t3;           // maior tempo
+
+#define FilterN 50
+
+double t4;                    // Temperatura no sensor T4
+double filtert4[FilterN]={0}; // Vetor para realizara a filtragem do sinal
+double tf;                    // Valor filtrado
+
+int s,b, valor=0, n=0, u=0, d=0;
+
+// Varáveis do Controle
+unsigned long lastTime;
+double Input, Output, Setpoint = 30;
+double ITerm, lastInput;
+double Kp = 2.72, Ki=0.000505, Kd=420, kp, ki, kd, timeChange;
+int SampleTime = 1000; //1 sec
+double outMin = 0, outMax = 100;
+
+//Função do Controle
+void Compute()
+{
+  unsigned long now = millis();
+  /*Correção parâmetros*/
+  timeChange = (now - lastTime);
+  kp = Kp;
+  ki = Ki * timeChange;
+  kd = Kd / timeChange; 
+
+  /*Compute all the working error variables*/
+  Input = tf;
+  double error = Setpoint - Input;
+  ITerm+= (ki * error);
+  if(ITerm> 50) ITerm= 50;
+  else if(ITerm< -50) ITerm= -50;
+  double dInput = (lastInput - Input);
+
+  /*Compute PID Output*/
+  Output = kp * error + ITerm + kd * dInput + 20;
+   
+  if(Output > outMax) Output = outMax;
+  else if(Output < outMin) Output = outMin;
+
+  /*Remember some variables for next time*/
+  lastInput = Input;
+  lastTime = now;
+  resist = Output;
+}
+
+// Função de Leitura da Serial 
+void processIncomingByte (const byte inByte)
+{
+  switch (inByte)
+  {
+    case '\n':   // end of text
+      if (n==4)
+        valor=100;
+      else
+        valor = d*10+u;
+        
+      if (s==1){
+        Setpoint = valor; 
+      } else if (b==1) {
+        bomba = valor;
+      }
+      
+      // reset buffer for next time
+      b=0;
+      s=0;
+      n=0;
+      valor=0;
+      u=0;
+      d=0;
+    break;
+
+    case '\r':   // discard carriage return
+    break;
+
+    case 's':  
+      s=1;
+      b=0;
+      n=1;
+    break;
+
+    case 'b':   
+      s=0;
+      n=1;
+    break;
+
+    case '0':   
+      if(n==1)
+        d=0;
+      else if(n==2);
+        u=0;
+      n++;
+    break;
+
+    case '1':   
+      if(n==1)
+        d=1;
+      else if(n==2);
+        u=1;
+      n++;
+    break;
+
+    case '2':   
+      if(n==1)
+        d=2;
+      else if(n==2);
+        u=2;
+      n++;
+    break;
+
+    case '3':   
+      if(n==1)
+        d=3;
+      else if(n==2);
+        u=3;
+      n++;
+    break;
+
+    case '4':   
+      if(n==1)
+        d=4;
+      else if(n==2);
+        u=4;
+      n++;
+    break;
+
+    case '5':   
+      if(n==1)
+        d=5;
+      else if(n==2);
+        u=5;
+      n++;
+    break;
+
+    case '6':   
+      if(n==1)
+        d=6;
+      else if(n==2);
+        u=6;
+      n++;
+    break;
+
+    case '7':   
+      if(n==1)
+        d=7;
+      else if(n==2);
+        u=7;
+      n++;
+    break;
+
+    case '8':   
+      if(n==1)
+        d=8;
+      else if(n==2);
+        u=8;
+      n++;
+    break;
+
+    case '9':   
+     if(n==1)
+        d=9;
+      else if(n==2);
+        u=9;
+      n++;
+    break;
+
+    default:
+    break;
+  }  // end of switch
+} // end of processIncomingByte  
+
+// Função de Identificação do "Zero" da Rede Elétrica
+void zeroCross()  {
+    if (resist>100) resist=100;
+    if (resist<0) resist=0;
+    if (bomba>100) bomba=100;
+    if (bomba<0) bomba=0;
+  
+    if (bomba < 80)
+      t1 = -52788*bomba/1000 + 8299;
+    else 
+      t1 = -10148*bomba/100 + 12250;
+  
+    if (resist < 80)
+      t2 = -52788*resist/1000 + 8299;
+    else 
+      t2 = -10148*resist/100 + 12250;
+      
+    if(bomba<10 & resist <10)
+    {}    //Não faz nada
+    else if (bomba<10){
+      t3=t2;
+      t1=0;
+      delayMicroseconds(t2);   
+      digitalWrite(PINO_DIM2, HIGH);  
+      delayMicroseconds(6);
+      digitalWrite(PINO_DIM2, LOW);           
+    }
+    else if (resist<10){
+      t3=t1;
+      t2=0;
+      delayMicroseconds(t1);   
+      digitalWrite(PINO_DIM1, HIGH);  
+      delayMicroseconds(6);
+      digitalWrite(PINO_DIM1, LOW);           
+    }
+    else if(t1<t2)
+    {
+      t3=t2;
+      delayMicroseconds(t1);   
+      digitalWrite(PINO_DIM1, HIGH);  
+      delayMicroseconds(6);
+      digitalWrite(PINO_DIM1, LOW);
+      delayMicroseconds(t2-t1);   
+      digitalWrite(PINO_DIM2, HIGH);  
+      delayMicroseconds(6);    
+      digitalWrite(PINO_DIM2, LOW);
+    }
+    else
+    {
+      t3=t1;
+      delayMicroseconds(t2);   
+      digitalWrite(PINO_DIM2, HIGH);  
+      delayMicroseconds(6);
+      digitalWrite(PINO_DIM2, LOW);
+      delayMicroseconds(t1-t2);   
+      digitalWrite(PINO_DIM1, HIGH);  
+      delayMicroseconds(6);    
+      digitalWrite(PINO_DIM1, LOW);
+    }
+  }
+
+void setup(){
+  Serial.begin(9600); 
+  delay(500);
+  pinMode(PINO_DIM1, OUTPUT);
+  pinMode(PINO_DIM2, OUTPUT);
+  attachInterrupt(5, zeroCross, RISING);
+  pinMode(CS, OUTPUT);
+  
+  Serial.print("Inicializando cartao SD...");
+  if (!SD.begin(CS)) 
+  {
+    Serial.println("Falha na Inicializacao!");
+    return;
+  }
+  Serial.println("Inicializacao terminada");
+
+}
+ 
+void loop(){
+
+  if (Serial.available () > 0)
+    processIncomingByte (Serial.read ());
+
+  t4 = T4.readCelsius();
+  tf=0;
+
+  for(int i=0; i<49; i++)
+  {
+    filtert4[i]=filtert4[i+1];
+    
+    if(filtert4[i]==0)
+      filtert4[i]=t4;
+
+    tf=tf+filtert4[i];
+  }
+  filtert4[FilterN - 1]=t4;
+  tf=tf+filtert4[FilterN - 1];
+  tf=tf/FilterN;
+
+  Compute();
+
+  Serial.print("Tempo: ");
+  Serial.print(millis());
+  Serial.print(" ");
+ 
+  Serial.print(" T1: ");
+  Serial.print(T2.readCelsius());
+  Serial.print(" ");
+
+  Serial.print(" T3: ");
+  Serial.print(T3.readCelsius());
+  Serial.print(" ");
+
+  Serial.print(" T4: ");
+  Serial.print(tf);
+  Serial.print(" ");
+
+  Serial.print(" Bomba: ");
+  Serial.print(bomba);
+  Serial.print("% ");
+
+  Serial.print(" Resistência: ");
+  Serial.print(resist);
+  Serial.print("% ");
+
+  Serial.print(" SP: ");
+  Serial.print(Setpoint);
+  Serial.println(" ");
+
+
+  if (meuArquivo = SD.open("log.txt",FILE_WRITE)) 
+  {
+    //Escreve no cartao SD por meio do objeto meuArquivo 
+
+    meuArquivo.print("Tempo: ");
+    meuArquivo.print(millis());
+    meuArquivo.print(" ");
+   
+    meuArquivo.print(" T1: ");
+    meuArquivo.print(T2.readCelsius());
+    meuArquivo.print(" ");
+  
+    meuArquivo.print(" T3: ");
+    meuArquivo.print(T3.readCelsius());
+    meuArquivo.print(" ");
+  
+    meuArquivo.print(" T4: ");
+    meuArquivo.print(tf);
+    meuArquivo.print(" ");
+  
+    meuArquivo.print(" Bomba: ");
+    meuArquivo.print(bomba);
+    meuArquivo.print("% ");
+  
+    meuArquivo.print(" Resistência: ");
+    meuArquivo.print(resist);
+    meuArquivo.print("% ");
+  
+    meuArquivo.print(" SP: ");
+    meuArquivo.print(Setpoint);
+    meuArquivo.println(" ");
+    
+    meuArquivo.close();
+  } 
+  else 
+  {
+    // se o arquivo nao abrir, mostra msg de erro
+    Serial.println("Erro ao abrir log.txt");
+  }
+  
+  for (int i=0; i<60; i++){
+    delayMicroseconds(8200-t3);
+  }
+  
+}
